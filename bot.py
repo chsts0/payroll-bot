@@ -23,8 +23,8 @@ RUN_MINUTES = float(os.getenv("RUN_MINUTES", "0"))   # 0 = работать бе
 staff = Staff(ALLOWED[0]) if ALLOWED else None
 
 HELP = (
-    "<b>Таблицей:</b> пришли файл .xlsx или .csv (выгрузку из вашей таблицы). "
-    "Беру последний период в таблице; другой — напиши в подписи к файлу, например <code>15.07-31.07</code>.\n\n"
+    "<b>Таблицей:</b> пришли файл .xlsx (Файл \u2192 Скачать \u2192 Microsoft Excel). Читаю листы \u00abЗарплата спб\u00bb и \u00abЗарплата мск\u00bb. "
+    "С каждого листа беру последний период; другой — напиши в подписи к файлу, например <code>15.07-31.07</code>.\n\n"
     "<b>Вручную:</b> первая строка — период, дальше по строке на человека:\n"
     "<code>1.09 – 15.09\n"
     "Даша С 28 0\n"
@@ -124,7 +124,7 @@ async def process(update: Update, context, period, people, errors, mismatches):
                              + "\n".join(mismatches[:25]) + "\nНа карточках — мой расчёт.")
 
     items = []   # (name, file_id)
-    cards = [(p, render(p, period)) for p in people]
+    cards = [(p, render(p, p.period or period)) for p in people]
     for i in range(0, len(cards), 10):
         chunk = cards[i:i + 10]
         if len(chunk) == 1:
@@ -133,12 +133,12 @@ async def process(update: Update, context, period, people, errors, mismatches):
         else:
             sent = await msg.reply_media_group([InputMediaPhoto(png, caption=p.name) for p, png in chunk])
         for (p, _), m in zip(chunk, sent):
-            items.append((p.name, m.photo[-1].file_id))
+            items.append((p.name, m.photo[-1].file_id, p.period or period))
 
     bid = uuid.uuid4().hex[:8]
     context.bot_data.setdefault("batches", {})[bid] = {"period": period, "items": items}
     total = sum(p.payout for p in people)
-    ready = [n for n, _ in items if staff.chat_for(n)]
+    ready = [n for n, *_ in items if staff.chat_for(n)]
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         f"\U0001F4E4 Разослать ({len(ready)} из {len(items)})", callback_data=f"ask:{bid}")]])
     await msg.reply_text(f"Готово, карточек: {len(people)} ({period})\nВсего к выплате: {money(total)}",
@@ -179,8 +179,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Бот перезапускался — пришли данные ещё раз", show_alert=True)
         return
     items = batch["items"]
-    ready = [(n, f) for n, f in items if staff.chat_for(n)]
-    missing = [n for n, _ in items if not staff.chat_for(n)]
+    ready = [it for it in items if staff.chat_for(it[0])]
+    missing = [it[0] for it in items if not staff.chat_for(it[0])]
 
     if action == "ask":
         await q.answer()
@@ -198,10 +198,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Отправляю…")
         await q.message.edit_reply_markup(None)
         ok, fail = [], []
-        for name, file_id in ready:
+        for name, file_id, per in ready:
             try:
                 await context.bot.send_photo(staff.chat_for(name), file_id,
-                                             caption=f"Расчётный лист {COMPANY} за {batch['period']}")
+                                             caption=f"Расчётный лист {COMPANY} за {per}")
                 ok.append(name)
             except Exception as e:
                 log.warning("Не отправилось %s: %s", name, e)
