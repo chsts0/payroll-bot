@@ -4,7 +4,7 @@ import logging
 import os
 import uuid
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, ReplyKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
@@ -36,11 +36,8 @@ HELP = (
     "Точки: " + ", ".join(f"{c} ({v[0]})" for c, v in POINTS.items()) + "\n"
     f"Ставка при ручном вводе {RATE} ₽/ч, КПИ {KPI_PERCENT}% от продаж, к выплате округляется вверх до {ROUND_TO}.\n\n"
     "<b>Рассылка:</b> под карточками будет кнопка «Разослать».\n"
-    "/staff — список сотрудников\n"
-    "<code>/add Имя @username</code> — добавить (имя как в таблице)\n"
-    "<code>/del Имя</code> — удалить\n"
-    "Каждый сотрудник должен один раз написать боту /start, иначе Telegram не даст ему написать.\n\n"
-    "/template — шаблон таблицы"
+    "<b>Сотрудники</b> — кнопки внизу: «👥 Сотрудники» (список, удаление) и «➕ Добавить сотрудника».\n"
+    "Каждый сотрудник должен один раз написать боту /start, иначе Telegram не даст ему написать."
 )
 
 
@@ -48,12 +45,81 @@ def is_admin(update: Update) -> bool:
     return bool(update.effective_user and update.effective_user.id in ALLOWED)
 
 
+B_STAFF = "👥 Сотрудники"
+B_ADD = "➕ Добавить сотрудника"
+B_TEMPLATE = "📄 Шаблон таблицы"
+B_HELP = "❓ Как пользоваться"
+MENU = ReplyKeyboardMarkup([[B_STAFF, B_ADD], [B_TEMPLATE, B_HELP]], resize_keyboard=True, is_persistent=True)
+STAFF_HINT = "✅ — подключён к рассылке, ⏳ — ещё не нажал /start.\nНажми на человека, чтобы удалить его."
+
+
+def staff_kb():
+    rows = []
+    for key, rec in sorted(staff.data.items(), key=lambda kv: kv[1]["n"].lower()):
+        mark = "✅" if rec.get("id") else "⏳"
+        rows.append([InlineKeyboardButton(f"{mark} {rec['n']} — @{rec['u']}", callback_data=f"sdel:{key}"[:64])])
+    rows.append([InlineKeyboardButton("➕ Добавить", callback_data="sadd:")])
+    return InlineKeyboardMarkup(rows)
+
+
+def staff_text():
+    return f"Сотрудники ({len(staff.data)}):\n{STAFF_HINT}" if staff.data else "Список пуст."
+
+
+async def show_staff(msg):
+    await msg.reply_text(staff_text(), reply_markup=staff_kb())
+
+
+async def ask_add(msg, context):
+    context.user_data["await_add"] = True
+    await msg.reply_html("Напиши имя (как в таблице) и @username, например:\n<code>Оля @olya</code>\n"
+                         "Можно сразу несколько — по одному на строку. Передумал — напиши «отмена».")
+
+
+async def add_from_text(update, context, text):
+    if text.lower() in ("отмена", "cancel"):
+        return await update.message.reply_text("Ок, отменил.", reply_markup=MENU)
+    added, bad = [], []
+    for line in filter(None, (l.strip() for l in text.splitlines())):
+        parts = line.replace("—", " ").replace("-", " ").split()
+        if len(parts) < 2 or not parts[-1].startswith("@"):
+            bad.append(line)
+            continue
+        name = " ".join(parts[:-1])
+        staff.add(name, parts[-1])
+        added.append(f"{name} — {parts[-1]}")
+    if added:
+        await staff.save(context.bot)
+    text = ""
+    if added:
+        text += "Добавил:\n" + "\n".join(added) + "\nПусть каждый напишет боту /start."
+    if bad:
+        context.user_data["await_add"] = True
+        text += ("\n\n" if text else "") + "Не понял: " + "; ".join(bad) + "\nФормат: Имя @username (или «отмена»)"
+    await update.message.reply_text(text, reply_markup=MENU)
+
+
+async def on_staff_button(q, context, action, key):
+    await q.answer()
+    if action == "sadd":
+        return await ask_add(q.message, context)
+    rec = staff.data.get(key)
+    if action == "sdel" and rec:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Да, удалить", callback_data=f"sdelok:{key}"[:64]),
+                                    InlineKeyboardButton("Назад", callback_data="sback:")]])
+        return await q.message.edit_text(f"Удалить {rec['n']} (@{rec['u']}) из рассылки?", reply_markup=kb)
+    if action == "sdelok" and rec:
+        staff.data.pop(key, None)
+        await staff.save(context.bot)
+    await q.message.edit_text(staff_text(), reply_markup=staff_kb())
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if is_admin(update):
         if staff.register(user.username, update.effective_chat.id):
             await staff.save(context.bot)
-        await update.message.reply_html(HELP)
+        await update.message.reply_html(HELP, reply_markup=MENU)
         return
     if not ALLOWED:
         await update.message.reply_text(
@@ -80,8 +146,7 @@ async def template(update: Update, _: ContextTypes.DEFAULT_TYPE):
 async def cmd_staff(update: Update, _: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
-    lines = staff.lines()
-    await update.message.reply_text("\n".join(lines) if lines else "Список пуст. Добавь: /add Имя @username")
+    await show_staff(update.message)
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -148,6 +213,17 @@ async def process(update: Update, context, period, people, errors, mismatches):
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return await start(update, context)
+    text = update.message.text.strip()
+    if text == B_STAFF:
+        return await show_staff(update.message)
+    if text == B_ADD:
+        return await ask_add(update.message, context)
+    if text == B_TEMPLATE:
+        return await template(update, context)
+    if text == B_HELP:
+        return await update.message.reply_html(HELP, reply_markup=MENU)
+    if context.user_data.pop("await_add", False):
+        return await add_from_text(update, context, text)
     await process(update, context, *parse_text(update.message.text))
 
 
@@ -174,6 +250,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return await q.answer()
     action, _, bid = q.data.partition(":")
+    if action.startswith("s"):
+        return await on_staff_button(q, context, action, bid)
     batch = context.bot_data.get("batches", {}).get(bid)
     if not batch:
         await q.answer("Бот перезапускался — пришли данные ещё раз", show_alert=True)
@@ -186,7 +264,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         text = f"Отправить расчётные листы за {batch['period']}: {len(ready)} чел.?"
         if missing:
-            text += "\n\nНе получат (нет в /staff или не нажали /start):\n" + ", ".join(missing)
+            text += "\n\nНе получат (нет в списке сотрудников или не нажали /start):\n" + ", ".join(missing)
         kb = [[InlineKeyboardButton("✅ Да, отправить", callback_data=f"go:{bid}"),
                InlineKeyboardButton("Отмена", callback_data=f"no:{bid}")]] if ready else \
              [[InlineKeyboardButton("Понятно", callback_data=f"no:{bid}")]]
