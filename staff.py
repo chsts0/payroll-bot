@@ -29,7 +29,8 @@ class Staff:
                 self.msg_id = pm.message_id
         except Exception as e:
             log.warning("Не смог загрузить базу: %s", e)
-        seed = os.getenv("STAFF_SEED", "")
+        # стартовый список — только если базы ещё нет, иначе удалённые кнопкой вернулись бы
+        seed = os.getenv("STAFF_SEED", "") if self.msg_id is None else ""
         changed = False
         for part in filter(None, (p.strip() for p in seed.split(";"))):
             name, _, user = part.partition("=")
