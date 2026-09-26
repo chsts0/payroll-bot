@@ -20,6 +20,9 @@ POINTS = {
     "П": ("Пик", "#fdeee3", "#b8520e"),
 }
 
+# старые точки: такие строки просто пропускаем
+SKIP_POINTS = ("черн",)
+
 _ALIASES = {
     "ДЗ": ["дз", "дизайнзавод", "завод"],
     "3В": ["3в", "тривокзала", "3вокзала", "депотривокзала", "депо3вокзала", "3вокз"],
@@ -236,6 +239,8 @@ def _parse_grid(title, grid, want_period, errors):
         if not name:
             continue
         per = find_period(get("period")) or ""
+        if _norm(get("point")).startswith(SKIP_POINTS):
+            continue
         try:
             code = find_point(get("point"))
             if not code:
