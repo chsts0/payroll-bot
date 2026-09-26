@@ -2,13 +2,12 @@
 import asyncio
 import logging
 import os
-from collections import defaultdict
 
 from telegram import InputMediaPhoto, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from card import money, render
-from payroll import KPI_PERCENT, POINTS, ParseError, make_template, parse_table, parse_text
+from payroll import KPI_PERCENT, RATE, ParseError, make_template, parse_table, parse_text
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -20,18 +19,16 @@ ALLOWED = {int(x) for x in os.getenv("ALLOWED_USERS", "").replace(" ", "").split
 RUN_MINUTES = float(os.getenv("RUN_MINUTES", "0"))   # 0 = работать бесконечно
 
 HELP = (
-    "Пришли данные — я сделаю карточки выписки.\n\n"
-    "<b>Текстом</b> (первая строка — период, дальше по строке на человека):\n"
-    "<code>1.08 – 14.08\n"
-    "Стас ДЗ 55 340 66300\n"
-    "Аня Севкабель 48 360 52000</code>\n"
-    "Формат: имя, точка, часы, ставка, продажи.\n\n"
-    "<b>Файлом</b> Excel/CSV с колонками Имя, Точка, Часы, Ставка, Продажи. "
-    "Период — в подписи к файлу или в ячейке «Период». Шаблон: /template\n\n"
-    f"КПИ = {KPI_PERCENT}% от продаж, «к выплате» округляется вверх до сотни.\n\n"
-    "<b>Точки:</b>\n" + "\n".join(
-        f"{code} — {name} ({'Москва' if city == 'msk' else 'Питер'})" for code, (name, city) in POINTS.items()
-    )
+    "Пришли данные \u2014 я сделаю карточки выписки.\n\n"
+    "<b>Текстом</b> (первая строка \u2014 период, дальше по строке на человека):\n"
+    "<code>1.08 \u2013 14.08\n"
+    "Стас 55 66300\n"
+    "Аня 48 52000</code>\n"
+    "Формат: имя, часы, продажи.\n\n"
+    "<b>Файлом</b> Excel/CSV с колонками Имя, Часы, Продажи. "
+    "Период \u2014 в подписи к файлу или в ячейке \u00abПериод\u00bb. Шаблон: /template\n\n"
+    f"Ставка {RATE} \u20bd/ч, КПИ = {KPI_PERCENT}% от продаж, "
+    "\u00abк выплате\u00bb округляется вверх до сотни."
 )
 
 
@@ -84,14 +81,8 @@ async def process(update: Update, period, rows, errors):
         else:
             await msg.reply_media_group([InputMediaPhoto(png, caption=r.name) for r, png in chunk])
 
-    by_point = defaultdict(int)
-    for r in rows:
-        by_point[r.point] += r.payout
-    lines = [f"{c}: {money(v)}" for c, v in by_point.items()]
-    await msg.reply_text(
-        f"Готово: {len(rows)} карточек за {period}\n\n" + "\n".join(lines)
-        + f"\n\nВсего к выплате: {money(sum(by_point.values()))}"
-    )
+    total = sum(r.payout for r in rows)
+    await msg.reply_text(f"Готово, карточек: {len(rows)} ({period})\nВсего к выплате: {money(total)}")
 
 
 async def on_text(update: Update, _: ContextTypes.DEFAULT_TYPE):
