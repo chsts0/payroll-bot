@@ -45,5 +45,5 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
           COMPANY_NAME: EYEPhoto
-          STAFF_SEED: "Стас=@ch_sts"
+          STAFF_SEED: ${{ secrets.STAFF_SEED }}
           RUN_MINUTES: "345"
