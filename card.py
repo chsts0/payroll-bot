@@ -67,9 +67,9 @@ def _rows(e):
         ("КПИ", ("+" if e.kpi > 0 else "") + money(e.kpi), GREEN if e.kpi > 0 else VALUE),
     ]
     if e.option > 0:
-        rows.append(("Премия", "+" + money(e.option), GREEN))
+        rows.append(("Штраф", money(-e.option), RED))
     elif e.option < 0:
-        rows.append(("Штраф", money(e.option), RED))
+        rows.append(("Премия", "+" + money(-e.option), GREEN))
     if e.ofzp:
         rows.append(("Офиц. зп (удержано)", money(-e.ofzp), RED))
     return rows
