@@ -70,7 +70,7 @@ class Entry:
     def kpi(self): return self.sales * KPI_PERCENT / 100
 
     @property
-    def total(self): return self.salary + self.kpi + self.option - self.ofzp   # опция: премия (+) или штраф (−)
+    def total(self): return self.salary + self.kpi - self.option - self.ofzp   # опция: штраф (+) вычитается, премия (−) прибавляется
 
     @property
     def payout(self) -> int:
@@ -129,7 +129,7 @@ _LABELS = {"оф": "ofzp", "офзп": "ofzp", "официалка": "ofzp", "о
 
 
 def parse_line(line: str):
-    """«Стас С 55 66300», можно добавить «оф 13593» и/или «опц -500» (штраф) / «опц 1000» (премия)."""
+    """«Стас С 55 66300», можно добавить «оф 13593» и/или «опц 500» (штраф) / «опц -1000» (премия)."""
     extra = {}
     if re.search(r"[;\t|]", line):
         f = [x.strip() for x in re.split(r"[;\t|]", line)]
@@ -191,7 +191,7 @@ def _col_key(h: str):
     if "час" in h: return "hours"
     if "ставк" in h: return "rate"
     if "продаж" in h: return "sales"
-    if any(k in h for k in ("опц", "штраф", "прем", "бонус")): return "option"
+    if h.startswith("оп") or any(k in h for k in ("штраф", "прем", "бонус")): return "option"
     if h.startswith("оф"): return "ofzp"
     if "выплат" in h: return "payout"
     return None
