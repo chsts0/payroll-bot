@@ -78,6 +78,7 @@ class Entry:
 class Person:
     name: str
     entries: list = field(default_factory=list)
+    period: str = ""
 
     @property
     def hours(self): return sum(e.hours for e in self.entries)
@@ -193,25 +194,27 @@ def _col_key(h: str):
     return None
 
 
-def _read_grid(filename: str, data: bytes):
+def _read_sheets(filename: str, data: bytes):
+    """[(название листа, строки)]. Из xlsx берём листы «Зарплата …», иначе все."""
     fn = filename.lower()
     if fn.endswith((".xlsx", ".xlsm")):
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-        ws = wb.worksheets[0]
-        return [["" if v is None else v for v in row] for row in ws.iter_rows(values_only=True)]
+        sheets = [ws for ws in wb.worksheets if "зарплат" in ws.title.lower()] or wb.worksheets
+        return [(ws.title, [["" if v is None else v for v in row] for row in ws.iter_rows(values_only=True)])
+                for ws in sheets]
     if fn.endswith((".csv", ".txt")):
         text = data.decode("utf-8-sig", errors="replace")
         try:
             dialect = csv.Sniffer().sniff(text[:3000], delimiters=";,\t")
         except csv.Error:
             dialect = csv.excel
-        return [row for row in csv.reader(io.StringIO(text), dialect)]
+        return [("", [row for row in csv.reader(io.StringIO(text), dialect)])]
     raise ParseError("пришли .xlsx или .csv")
 
 
-def parse_table(filename: str, data: bytes, want_period: str = None):
-    grid = _read_grid(filename, data)
+def _parse_grid(title, grid, want_period, errors):
+    """Записи одного листа за нужный (или последний) период."""
     header_idx, cols = None, {}
     for i, row in enumerate(grid[:20]):
         found = {}
@@ -223,9 +226,10 @@ def parse_table(filename: str, data: bytes, want_period: str = None):
             header_idx, cols = i, found
             break
     if header_idx is None:
-        raise ParseError("не нашёл заголовки. Нужны колонки: сотрудник, точка, часы, продажи")
+        return None, []
 
-    by_period, errors, order = OrderedDict(), [], []
+    where = f"{title}, " if title else ""
+    by_period = OrderedDict()
     for i, row in enumerate(grid[header_idx + 1:], header_idx + 2):
         get = lambda k: (row[cols[k]] if k in cols and cols[k] < len(row) else "")
         name = str(get("name")).strip()
@@ -235,7 +239,7 @@ def parse_table(filename: str, data: bytes, want_period: str = None):
         try:
             code = find_point(get("point"))
             if not code:
-                raise ParseError(f"не знаю точку «{get('point')}»")
+                raise ParseError(f"не знаю точку \u00ab{get('point')}\u00bb")
             rate = to_num(get("rate")) or RATE
             exp = get("payout")
             e = Entry(code, to_num(get("hours")), to_num(get("sales")), rate=rate,
@@ -243,25 +247,42 @@ def parse_table(filename: str, data: bytes, want_period: str = None):
                       expected=to_num(exp) if str(exp).strip() != "" else None)
             by_period.setdefault(per, []).append((name, e))
         except (ParseError, ValueError) as ex:
-            errors.append(f"Строка {i} ({name}): {ex}")
-
+            errors.append(f"{where}строка {i} ({name}): {ex}")
     if not by_period:
-        return None, [], errors, []
+        return None, []
     if want_period:
-        key = next((p for p in by_period if p == want_period), None)
-        if key is None:
-            errors.append(f"Период {want_period} в таблице не найден, беру последний")
-    else:
-        key = None
-    if key is None:
-        key = list(by_period)[-1]           # последний период в таблице
-    records = by_period[key]
+        if want_period not in by_period:
+            errors.append(f"{title or 'Таблица'}: периода {want_period} нет, лист пропущен")
+            return None, []
+        return want_period, by_period[want_period]
+    key = list(by_period)[-1]
+    return key, by_period[key]
+
+
+def parse_table(filename: str, data: bytes, want_period: str = None):
+    errors, people, periods, found_any = [], [], [], False
+    for title, grid in _read_sheets(filename, data):
+        key, records = _parse_grid(title, grid, want_period, errors)
+        if key is None and not records:
+            continue
+        found_any = True
+        periods.append(key)
+        for p in group(records):
+            p.period = key
+            people.append(p)
+    if not found_any and not errors:
+        raise ParseError("не нашёл заголовки. Нужны колонки: сотрудник, точка, часы, продажи")
 
     mismatches = []
-    for name, e in records:
-        if e.expected is not None and abs(e.expected - e.payout) >= 1:
-            mismatches.append(f"{name} ({e.point}): в таблице {e.expected:g}, у меня {e.payout}")
-    return key or None, group(records), errors, mismatches
+    for p in people:
+        for e in p.entries:
+            if e.expected is not None and abs(e.expected - e.payout) >= 1:
+                mismatches.append(f"{p.name} ({e.point}): в таблице {e.expected:g}, у меня {e.payout}")
+    uniq = [x for x in dict.fromkeys(periods) if x]
+    if len(uniq) > 1:
+        errors.append("На листах разные последние периоды: " + ", ".join(uniq)
+                      + ". Если нужен один \u2014 укажи его в подписи к файлу.")
+    return (" / ".join(uniq) or None), people, errors, mismatches
 
 
 def make_template() -> bytes:
