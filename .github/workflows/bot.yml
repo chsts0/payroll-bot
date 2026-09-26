@@ -44,5 +44,6 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
-          COMPANY_NAME: EYEPHOTO
+          COMPANY_NAME: EYEPhoto
+          STAFF_SEED: "Стас=@ch_sts"
           RUN_MINUTES: "345"
