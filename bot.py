@@ -5,6 +5,7 @@ import os
 import uuid
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, ReplyKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
@@ -51,6 +52,21 @@ B_TEMPLATE = "📄 Шаблон таблицы"
 B_HELP = "❓ Как пользоваться"
 MENU = ReplyKeyboardMarkup([[B_STAFF, B_ADD], [B_TEMPLATE, B_HELP]], resize_keyboard=True, is_persistent=True)
 STAFF_HINT = "✅ — подключён к рассылке, ⏳ — ещё не нажал /start.\nНажми на человека, чтобы удалить его."
+
+
+CONFETTI = "5046509860389126442"   # эффект сообщения 🎉 (конфетти), работает только в личке
+
+
+async def send_payslip(bot, chat, file_id, per):
+    """Шлёт расчётный лист с конфетти. Если эффект не прошёл, шлёт без него."""
+    caption = f"Расчётный лист {COMPANY} за {per}"
+    try:
+        return await bot.send_photo(chat, file_id, caption=caption, message_effect_id=CONFETTI)
+    except BadRequest as e:
+        if "effect" not in str(e).lower():
+            raise
+        log.warning("Эффект не прошёл (%s), шлю без него", e)
+        return await bot.send_photo(chat, file_id, caption=caption)
 
 
 def staff_kb():
@@ -309,8 +325,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok, fail = [], []
         for name, file_id, per, _ in ready:
             try:
-                await context.bot.send_photo(staff.chat_for(name), file_id,
-                                             caption=f"Расчётный лист {COMPANY} за {per}")
+                await send_payslip(context.bot, staff.chat_for(name), file_id, per)
                 ok.append(name)
             except Exception as e:
                 log.warning("Не отправилось %s: %s", name, e)
@@ -348,7 +363,7 @@ async def on_one(q, context, action, bid, batch, idx):
         return await q.message.edit_text(f"Отправить лист за {per}: {name}?", reply_markup=kb)
     await q.answer("Отправляю…")
     try:
-        await context.bot.send_photo(chat, file_id, caption=f"Расчётный лист {COMPANY} за {per}")
+        await send_payslip(context.bot, chat, file_id, per)
         text = f"\U0001F4E8 Отправлено: {name}"
     except Exception as e:
         log.warning("Не отправилось %s: %s", name, e)
