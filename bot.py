@@ -9,7 +9,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
                           MessageHandler, filters)
 
 from card import COMPANY, money, render
-from payroll import (KPI_PERCENT, POINTS, RATE, ROUND_TO, ParseError, find_period,
+from payroll import (CITY_NAMES, KPI_PERCENT, POINTS, RATE, ROUND_TO, ParseError, find_period,
                      make_template, parse_table, parse_text)
 from staff import Staff
 
@@ -198,16 +198,42 @@ async def process(update: Update, context, period, people, errors, mismatches):
         else:
             sent = await msg.reply_media_group([InputMediaPhoto(png, caption=p.name) for p, png in chunk])
         for (p, _), m in zip(chunk, sent):
-            items.append((p.name, m.photo[-1].file_id, p.period or period))
+            items.append((p.name, m.photo[-1].file_id, p.period or period, p.city))
 
     bid = uuid.uuid4().hex[:8]
     context.bot_data.setdefault("batches", {})[bid] = {"period": period, "items": items}
     total = sum(p.payout for p in people)
-    ready = [n for n, *_ in items if staff.chat_for(n)]
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        f"\U0001F4E4 Разослать ({len(ready)} из {len(items)})", callback_data=f"ask:{bid}")]])
     await msg.reply_text(f"Готово, карточек: {len(people)} ({period})\nВсего к выплате: {money(total)}",
-                         reply_markup=kb)
+                         reply_markup=send_kb(bid, items))
+
+
+def send_kb(bid, items):
+    """Кнопки рассылки: всем, и отдельно по городам, если в выписке есть оба."""
+    def btn(label, scope):
+        sel = [it for it in items if scope == "all" or it[3] == scope]
+        ready = sum(1 for it in sel if staff.chat_for(it[0]))
+        return InlineKeyboardButton(f"{label} ({ready} из {len(sel)})", callback_data=f"ask:{bid}:{scope}")
+    rows = [[btn("\U0001F4E4 Разослать всем", "all")]]
+    cities = [c for c in CITY_NAMES if any(it[3] == c for it in items)]
+    if len(cities) > 1:
+        rows.append([btn(f"Только {CITY_NAMES[c]}", c) for c in cities])
+    rows.append([InlineKeyboardButton("\U0001F464 Отправить одному", callback_data=f"one:{bid}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def people_kb(bid, items):
+    """Список людей из выписки: нажал — отправить лист только ему."""
+    rows, row = [], []
+    for i, it in enumerate(items):
+        mark = "" if staff.chat_for(it[0]) else "⏳ "
+        row.append(InlineKeyboardButton(mark + it[0], callback_data=f"p1:{bid}:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("Закрыть", callback_data=f"no:{bid}")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,22 +278,27 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, _, bid = q.data.partition(":")
     if action.startswith("s"):
         return await on_staff_button(q, context, action, bid)
+    bid, _, scope = bid.partition(":")
     batch = context.bot_data.get("batches", {}).get(bid)
     if not batch:
-        await q.answer("Бот перезапускался — пришли данные ещё раз", show_alert=True)
+        await q.answer("Бот перезапускался — пришли таблицу ещё раз", show_alert=True)
         return
-    items = batch["items"]
+    if action in ("one", "p1", "g1"):
+        return await on_one(q, context, action, bid, batch, scope)
+    scope = scope or "all"
+    items = [it for it in batch["items"] if scope == "all" or it[3] == scope]
+    where = "" if scope == "all" else f" ({CITY_NAMES[scope]})"
     ready = [it for it in items if staff.chat_for(it[0])]
     missing = [it[0] for it in items if not staff.chat_for(it[0])]
 
     if action == "ask":
         await q.answer()
-        text = f"Отправить расчётные листы за {batch['period']}: {len(ready)} чел.?"
+        text = f"Отправить расчётные листы за {batch['period']}{where}: {len(ready)} чел.?"
         if missing:
             text += "\n\nНе получат (нет в списке сотрудников или не нажали /start):\n" + ", ".join(missing)
-        kb = [[InlineKeyboardButton("✅ Да, отправить", callback_data=f"go:{bid}"),
-               InlineKeyboardButton("Отмена", callback_data=f"no:{bid}")]] if ready else \
-             [[InlineKeyboardButton("Понятно", callback_data=f"no:{bid}")]]
+        kb = [[InlineKeyboardButton("✅ Да, отправить", callback_data=f"go:{bid}:{scope}"),
+               InlineKeyboardButton("Отмена", callback_data=f"no:{bid}:{scope}")]] if ready else \
+             [[InlineKeyboardButton("Понятно", callback_data=f"no:{bid}:{scope}")]]
         await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
     elif action == "no":
         await q.answer("Отменено")
@@ -276,7 +307,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Отправляю…")
         await q.message.edit_reply_markup(None)
         ok, fail = [], []
-        for name, file_id, per in ready:
+        for name, file_id, per, _ in ready:
             try:
                 await context.bot.send_photo(staff.chat_for(name), file_id,
                                              caption=f"Расчётный лист {COMPANY} за {per}")
@@ -285,12 +316,44 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log.warning("Не отправилось %s: %s", name, e)
                 fail.append(name)
             await asyncio.sleep(0.1)
-        text = f"\U0001F4E8 Отправлено: {len(ok)}"
+        text = f"\U0001F4E8 Отправлено{where}: {len(ok)}"
         if fail:
             text += "\nНе удалось (возможно, заблокировали бота): " + ", ".join(fail)
         if missing:
             text += "\nНе отправлено (нет в базе): " + ", ".join(missing)
         await q.message.reply_text(text)
+
+
+async def on_one(q, context, action, bid, batch, idx):
+    """Отправка листа одному человеку."""
+    items = batch["items"]
+    if action == "one":
+        await q.answer()
+        if q.message.text and q.message.text.startswith(("Отправить лист", "Кому", "\U0001F4E8", "Не удалось")):
+            return await q.message.edit_text("Кому отправить? (⏳ — ещё не нажал /start или нет в списке)",
+                                             reply_markup=people_kb(bid, items))
+        return await q.message.reply_text("Кому отправить? (⏳ — ещё не нажал /start или нет в списке)",
+                                          reply_markup=people_kb(bid, items))
+    try:
+        name, file_id, per, _ = items[int(idx)]
+    except (ValueError, IndexError):
+        return await q.answer("Не нашёл", show_alert=True)
+    chat = staff.chat_for(name)
+    if not chat:
+        return await q.answer(f"{name} ещё не нажал(а) /start или нет в списке сотрудников", show_alert=True)
+    if action == "p1":
+        await q.answer()
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Отправить", callback_data=f"g1:{bid}:{idx}"),
+                                    InlineKeyboardButton("Назад", callback_data=f"one:{bid}")]])
+        return await q.message.edit_text(f"Отправить лист за {per}: {name}?", reply_markup=kb)
+    await q.answer("Отправляю…")
+    try:
+        await context.bot.send_photo(chat, file_id, caption=f"Расчётный лист {COMPANY} за {per}")
+        text = f"\U0001F4E8 Отправлено: {name}"
+    except Exception as e:
+        log.warning("Не отправилось %s: %s", name, e)
+        text = f"Не удалось отправить {name} (возможно, заблокировал(а) бота)"
+    await q.message.edit_text(text + "\n\nКому ещё?", reply_markup=people_kb(bid, items))
 
 
 async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
@@ -300,6 +363,9 @@ async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(app: Application):
     if staff:
         await staff.load(app.bot)
+        if not staff.loaded:
+            await app.bot.send_message(ALLOWED[0], "⚠️ Не смог загрузить базу сотрудников из репозитория. "
+                                       "Рассылка работает, но изменения в списке не сохранятся до перезапуска.")
     if RUN_MINUTES > 0:
         log.info("Бот остановится через %s мин (следующий запуск подхватит)", RUN_MINUTES)
         asyncio.get_running_loop().call_later(RUN_MINUTES * 60, app.stop_running)
