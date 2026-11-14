@@ -20,6 +20,10 @@ POINTS = {
     "П": ("Пик", "#fdeee3", "#b8520e"),
 }
 
+# город точки (для раздельной рассылки)
+CITY = {"ДЗ": "msk", "3В": "msk", "ЛД": "msk", "С": "spb", "В": "spb", "П": "spb"}
+CITY_NAMES = {"msk": "Москва", "spb": "Питер"}
+
 # старые точки: такие строки просто пропускаем
 SKIP_POINTS = ("черн",)
 
@@ -88,6 +92,16 @@ class Person:
 
     @property
     def payout(self): return sum(e.payout for e in self.entries)
+
+    @property
+    def city(self):
+        """Город по точкам; если человек был в обоих городах — по большинству часов."""
+        hrs = {}
+        for e in self.entries:
+            c = CITY.get(e.point)
+            if c:
+                hrs[c] = hrs.get(c, 0) + e.hours + 0.001
+        return max(hrs, key=hrs.get) if hrs else None
 
 
 class ParseError(Exception):
