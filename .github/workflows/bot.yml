@@ -14,7 +14,7 @@ concurrency:
 
 permissions:
   actions: write
-  contents: read
+  contents: write   # бот сохраняет зашифрованную базу сотрудников в data/staff.enc
 
 jobs:
   run:
@@ -46,4 +46,5 @@ jobs:
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
           COMPANY_NAME: EYEPhoto
           STAFF_SEED: ${{ secrets.STAFF_SEED }}
+          GITHUB_TOKEN: ${{ github.token }}
           RUN_MINUTES: "345"
