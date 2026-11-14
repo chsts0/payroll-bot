@@ -1,0 +1,24 @@
+name: effect-test
+# Временный: проверка конфетти, удалить после
+on:
+  push:
+    branches: [claude/compassionate-galileo-9q0uid]
+    paths: [effect_test.py, .github/workflows/effect-test.yml]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: ls /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf || (sudo apt-get update && sudo apt-get install -y fonts-dejavu-core)
+      - run: python effect_test.py
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
+          COMPANY_NAME: EYEPhoto
